@@ -45,10 +45,18 @@ krok "Środowisko Pythona 3.10 i biblioteki (kilka minut)"
 [ -d .venv ] || uv venv -q -p 3.10 .venv
 # shellcheck disable=SC1091
 set +u; source .venv/bin/activate; set -u
-uv pip install -q -r requirements.txt
-# PyTorch dokładnie w wersji z instrukcji autorów (CUDA 12.8) — po requirements, żeby nic go nie nadpisało.
-uv pip install -q --reinstall-package torch --reinstall-package torchvision torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
-uv pip install -q "gradio==5.50.0" huggingface_hub ninja
+# Lista autorów ma sprzeczność: nvidia-nccl-cu12==2.27.3, a xformers 0.0.31 -> torch 2.7.1 wymaga nccl 2.26.2.
+# NCCL służy tylko do pracy na wielu kartach, więc tę jedną linię pomijamy (zostaje wersja z torcha).
+# opencv < 5: autorzy pisali kod pod serię 4.x.
+REQ=/workspace/tymon-wymagania.txt
+{ grep -v '^nvidia-nccl' requirements.txt; echo; } > "$REQ"
+printf 'opencv-python<5\nopencv-python-headless<5\nopencv-contrib-python<5\n' > /workspace/tymon-ograniczenia.txt
+# Wszystko jednym poleceniem: PyTorch 2.7.1 pod CUDA 12.8 (jak w instrukcji autorów) + reszta bibliotek.
+uv pip install -q -r "$REQ" -c /workspace/tymon-ograniczenia.txt \
+  "torch==2.7.1+cu128" "torchvision==0.22.1+cu128" "gradio==5.50.0" huggingface_hub ninja \
+  --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
+python -c "import cv2, mediapipe, decord, xformers, xfuser; print('biblioteki OK, opencv', cv2.__version__)" \
+  || echo "UWAGA: któraś biblioteka się nie ładuje (wyżej szczegóły) — instalacja idzie dalej"
 
 krok "FlashAttention (gotowa paczka; budowanie od zera trwałoby godzinę)"
 if ! python -c "import flash_attn" 2>/dev/null; then

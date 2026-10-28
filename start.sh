@@ -7,7 +7,8 @@
 # Użycie (w terminalu poda):
 #   curl -fsSL https://raw.githubusercontent.com/Tymon-17/tymon-twarz/main/start.sh | bash
 # Tryby po instalacji:
-#   bash /workspace/tymon-twarz/uruchom.sh plik       # wideo z gotowego pliku audio (domyślnie)
+#   bash /workspace/tymon-twarz/uruchom.sh usluga     # okienko dla aplikacji Tymona (domyślnie)
+#   bash /workspace/tymon-twarz/uruchom.sh plik       # strona demo: wideo z gotowego pliku audio
 #   bash /workspace/tymon-twarz/uruchom.sh strumien   # demo strumieniowe (na żywo)
 # Dziennik: /workspace/twarz-instalacja.log
 # ============================================================
@@ -53,7 +54,7 @@ REQ=/workspace/tymon-wymagania.txt
 printf 'opencv-python<5\nopencv-python-headless<5\nopencv-contrib-python<5\n' > /workspace/tymon-ograniczenia.txt
 # Wszystko jednym poleceniem: PyTorch 2.7.1 pod CUDA 12.8 (jak w instrukcji autorów) + reszta bibliotek.
 uv pip install -q -r "$REQ" -c /workspace/tymon-ograniczenia.txt \
-  "torch==2.7.1+cu128" "torchvision==0.22.1+cu128" "gradio==5.50.0" huggingface_hub ninja \
+  "torch==2.7.1+cu128" "torchvision==0.22.1+cu128" "gradio==5.50.0" huggingface_hub hf_transfer ninja \
   --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
 python -c "import cv2, mediapipe, decord, xformers, xfuser; print('biblioteki OK, opencv', cv2.__version__)" \
   || echo "UWAGA: któraś biblioteka się nie ładuje (wyżej szczegóły) — instalacja idzie dalej"
@@ -67,6 +68,8 @@ fi
 python -c "import torch, flash_attn; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'gpu', torch.cuda.is_available(), 'flash_attn', flash_attn.__version__)"
 
 krok "Modele (ok. kilku GB, raz)"
+# Szablon RunPod włącza szybkie pobieranie (HF_HUB_ENABLE_HF_TRANSFER=1); bez paczki hf_transfer wyłączamy je.
+python -c "import hf_transfer" 2>/dev/null || export HF_HUB_ENABLE_HF_TRANSFER=0
 python - <<'PY'
 from huggingface_hub import snapshot_download
 for repo, cel in [("Soul-AILab/SoulX-FlashHead-1_3B", "models/SoulX-FlashHead-1_3B"),
@@ -76,5 +79,5 @@ for repo, cel in [("Soul-AILab/SoulX-FlashHead-1_3B", "models/SoulX-FlashHead-1_
 print("modele gotowe")
 PY
 
-krok "Instalacja skończona. Uruchamiam stronę demo (tryb: plik)"
-bash /workspace/tymon-twarz/uruchom.sh plik
+krok "Instalacja skończona. Uruchamiam usługę twarzy dla Tymona"
+bash /workspace/tymon-twarz/uruchom.sh usluga

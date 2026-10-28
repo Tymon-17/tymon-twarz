@@ -1,77 +1,80 @@
-# tymon-twarz — silnik twarzy Tymona (prototyp v1)
+# tymon-twarz — silnik twarzy Tymona (v2)
 
 Osobny moduł: **portret + dźwięk → mówiąca twarz**. Nie zna Tymona, jego pamięci ani rozmów.
 Dostaje tylko zdjęcie i nagranie głosu. Model językowy i silnik twarzy można wymieniać niezależnie.
 
-**v1 (27.10.2026):** silnik **SoulX-FlashHead** (1,3 mld parametrów, jedno zdjęcie + dźwięk,
-wersja Lite do ~96 klatek/s na RTX 4090). Strona demo autorów, uruchomiona za hasłem i bez publicznych linków.
-Kolejne wersje: Ditto i MuseTalk do porównania, potem stany (słucha / cisza / mówi) i strumień.
+- **v1 (27.10.2026):** silnik **SoulX-FlashHead** na stronie demo autorów, za hasłem.
+- **v2 (28.10.2026):** **usługa dla aplikacji Tymona**:
+  - po włączeniu maszyny twarz sama pojawia się w rozmowie i mówi razem z głosem;
+  - strona demo nadal jest dostępna (tryb `plik`).
 
-W repozytorium jest sam kod. Nie ma tu kluczy, zdjęcia Tymona ani nagrań — te wgrywasz tylko na stronie demo, na czas próby.
+W repozytorium jest sam kod. Nie ma tu kluczy, zdjęcia Tymona ani nagrań.
 
 ---
 
-## Jak uruchomić (dla Oli, krok po kroku)
+## Ustawienia jednorazowe
 
-### 0. Przygotuj (raz)
-- **Portret Tymona** (to samo kanoniczne zdjęcie, JPG/PNG).
-- **Trzy nagrania głosu Tymona z ElevenLabs** (MP3 albo WAV, po 10–30 sekund): spokojne, emocjonalne, ciche.
+### Szablon w RunPod (`tymon-twarz`)
+RunPod → **Templates** → `tymon-twarz` → **Edit**:
+- **Container image:** `runpod/pytorch:1.4.1-cu1281-torch280-ubuntu2204`
+- **Container disk:** 60 GB, bez wolumenu
+- **HTTP ports:** `8888`, `7860`
+- **Environment variables:**
+  - `DEMO_HASLO` — Twoje hasło do twarzy (min. 10 znaków)
+  - `TYMON_ADRES` — adres, pod którym otwierasz Tymona, np. `https://twoj-tymon.vercel.app`
+    (bez ukośnika na końcu)
+  - (opcjonalnie) `TWARZ_MODEL` = `pro` — ładniejsza, ale wolniejsza; domyślnie `lite`
 
-### 1. Maszyna w RunPod
-1. RunPod → **Pods** → **Deploy**.
-2. Wybierz **Secure Cloud** i kartę **RTX 4090** (24 GB). Jeśli jest filtr „CUDA version” — 12.8 lub nowsza.
-3. Szablon (Template): **Runpod Pytorch** (dowolna aktualna wersja).
-4. Kliknij **Edit Template** i ustaw:
-   - **Container Disk:** 20 GB
-   - **Volume Disk:** 40 GB (ścieżka `/workspace`)
-   - **Expose HTTP Ports:** dopisz `7860` (zostaw `8888`)
-   - **Environment Variables:** klucz `DEMO_HASLO`, wartość: twoje hasło do strony demo, min. 10 znaków
-     (inne niż hasło do Tymona).
-5. Typ: **On-Demand** (nie Spot) → **Deploy**.
+### Vercel (projekt `tymon`, main)
+- Settings → Environment Variables → nowa zmienna **`TWARZ_HASLO`**, wartość **dokładnie taka sama** jak `DEMO_HASLO` → Save → Redeploy.
 
-### 2. Instalacja (raz na maszynę, ok. 15–25 min)
-1. Gdy pod ma status **Running**: **Connect** → **Jupyter Lab** (port 8888) → **Terminal**
-   (albo przycisk **Web Terminal**, jeśli jest).
-2. Wklej i zatwierdź Enterem:
+---
+
+## Rozmowa z twarzą (za każdym razem)
+1. RunPod → **Pods** → **Deploy** → szablon `tymon-twarz` → **RTX 4090**, Secure, On-Demand → **Deploy Pod**.
+2. **Connect** → **Jupyter Lab** → **File → New → Terminal**, wklej i Enter:
    ```
    curl -fsSL https://raw.githubusercontent.com/Tymon-17/tymon-twarz/main/start.sh | bash
    ```
-3. Poczekaj, aż na końcu pojawi się: **„Strona demo startuje w tle”**.
+3. Po ok. 10 min pojawi się napis **„Usługa twarzy startuje w tle”**. Wczytanie modelu trwa jeszcze 1–2 min.
+4. W aplikacji Tymona włącz przycisk **twarz**. W ciągu ok. 30 s twarz zacznie mówić filmem zamiast zdjęcia.
+5. **Koniec:** RunPod → **Stop** → **⋮ → Terminate**. Po ok. 2,5 min aplikacja sama wraca do zdjęcia.
 
-### 3. Próba
-1. **Connect** → **HTTP Service [Port 7860]**. Login: `tymon`, hasło: twoje `DEMO_HASLO`.
-2. Wgraj portret i pierwsze nagranie → generuj. Potem dwa pozostałe.
-3. Zanotuj dla każdego nagrania: długość nagrania, ile trwało generowanie, jak wyglądają usta,
-   oczy, ruch głowy (i czy nos został krzywy 🙂).
-4. Demo na żywo (opcjonalnie): w terminalu `bash /workspace/tymon-twarz/uruchom.sh strumien`,
-   potem odśwież stronę 7860. Powrót: `bash /workspace/tymon-twarz/uruchom.sh plik`.
+Maszyna kosztuje ok. **0,90 $ za godzinę**, dopóki istnieje — także wtedy, gdy nic nie mówisz.
 
-### 4. Koniec próby — ważne dla kosztów
-- **Stop** — maszyna stoi, dysk zostaje (40 GB ≈ 0,27 $ dziennie). Następnym razem bez instalacji:
-  Start → terminal → `bash /workspace/tymon-twarz/uruchom.sh plik`.
-- **Terminate** — wszystko usunięte (także zdjęcie i nagrania), nic nie kosztuje.
-  Następnym razem instalacja od nowa. **Jeśli przez 2 dni nie testujesz — Terminate.**
+### Strona demo zamiast usługi
+W terminalu poda:
+- `bash /workspace/tymon-twarz/uruchom.sh plik` — strona demo (Connect → HTTP Service 7860, login `tymon`);
+- `bash /workspace/tymon-twarz/uruchom.sh usluga` — powrót do Tymona.
 
 ### Coś nie działa?
-W terminalu:
 ```
 tail -n 40 /workspace/twarz-instalacja.log
-tail -n 40 /workspace/twarz-demo.log
+tail -n 40 /workspace/twarz-usluga.log
 ```
-i wklej Sweterkowi wynik.
+i wklej Sweterkowi wynik. Dziennik usługi zawiera tylko liczby (czasy, rozmiary), bez treści.
 
 ---
 
+## Jak to działa (dla ciekawych)
+- `usluga.py` — okienko HTTP na porcie 7860. Każde wywołanie wymaga hasła.
+  - `/zdrowie` — czy model jest gotowy;
+  - `/portret` — ustawia twarz;
+  - `/mow` — dźwięk jednego zdania → film mp4 512×512, 25 kl./s, bez dźwięku.
+- Ruch głowy płynie dalej między zdaniami: usługa pamięta ostatnie klatki i 8 s dźwięku.
+- Adres maszyny zmienia się przy każdej nowej maszynie. Usługa co 60 s zgłasza go Tymonowi (`TYMON_ADRES/api/twarz-silnik`). Tymon przyjmuje tylko adresy RunPod dla portu 7860.
+- Do maszyny trafiają tylko portret i dźwięk zdań. Rozmowa i pamięć tu nie trafiają.
+
 ## Bezpieczeństwo
-- Strona demo działa tylko z hasłem (`DEMO_HASLO` w ustawieniach poda, nie w kodzie).
-- Publiczne linki Gradio są wyłączone (`share=False`), analityka Gradio wyłączona.
-- Oryginalne pliki FlashHead nie są zmieniane; uruchamiana jest zabezpieczona kopia (`zabezpiecz.py`).
+- Hasło (`DEMO_HASLO`) jest wyłącznie w ustawieniach poda i w Vercelu (`TWARZ_HASLO`), nigdy w kodzie.
+- Publiczne linki Gradio są wyłączone (`share=False`), analityka Gradio też.
 
 ## Licencje (do potwierdzenia przed codziennym użyciem)
 - SoulX-FlashHead: wagi transformera i VAE Wan — Apache-2.0; VAE LTX (wariant Lite) — OpenRAIL-M.
 - wav2vec2-base-960h — Apache-2.0.
 
 ## Pliki
-- `start.sh` — instalacja + pierwsze uruchomienie
-- `uruchom.sh` — uruchomienie strony (tryb `plik` albo `strumien`)
-- `zabezpiecz.py` — hasło, brak publicznych linków, port 7860
+- `start.sh` — instalacja i start usługi
+- `uruchom.sh` — tryb `usluga` (domyślnie), `plik` albo `strumien`
+- `usluga.py` — usługa dla aplikacji Tymona
+- `zabezpiecz.py` — zabezpieczenie strony demo: hasło, brak publicznych linków, port 7860

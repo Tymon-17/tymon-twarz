@@ -17,9 +17,18 @@ Ustawienia (zmienne środowiska poda):
   TWARZ_MODEL     — lite (domyślnie, szybki) albo pro (ładniejszy, wolniejszy)
   TWARZ_FACE_CROP — 1 = wytnij twarz z portretu (więcej szczegółów ust), 0 = cały kadr (domyślnie)
   TWARZ_SEED      — liczba, domyślnie 9999
+  TWARZ_BEZCZYNNOSC_MIN — po tylu minutach bez /mow maszyna sama się zatrzymuje (domyślnie 20)
+
+v3 (28.10, list Tymona):
+  • ROZGRZEWKA: pierwszy film po starcie kompilował się 147 s. Teraz zaraz po wczytaniu modelu
+    usługa robi sama 2 s filmu z szarym portretem i ciszą, i dopiero potem melduje gotowość.
+    Pamięć kompilacji leży na wolumenie (uruchom.sh), więc kolejne maszyny rozgrzewają się szybciej.
+  • SAMOWYŁĄCZENIE: druga linia obrony obok strażnika w Vercelu — po TWARZ_BEZCZYNNOSC_MIN
+    minutach bez zdania maszyna zatrzymuje się sama (runpodctl, klucz poda od RunPod).
 Logi: tylko liczby i kody, bez treści.
 """
 import hashlib
+import io
 import hmac
 import json
 import os
@@ -53,6 +62,8 @@ PORT = 7860
 MAKS_DZWIEK_B = 3 * 1024 * 1024     # jedno zdanie z ElevenLabs to zwykle < 300 KB
 MAKS_PORTRET_B = 8 * 1024 * 1024
 MAKS_DZWIEK_S = 60.0
+BEZCZYNNOSC_S = int(os.environ.get("TWARZ_BEZCZYNNOSC_MIN", "20")) * 60
+ostatnia_aktywnosc = time.time()
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAKS_PORTRET_B
@@ -88,11 +99,50 @@ def wczytaj_model():
         pipeline = get_pipeline(world_size=1, ckpt_dir="models/SoulX-FlashHead-1_3B",
                                 model_type=MODEL, wav2vec_dir="models/wav2vec2-base-960h")
         P = get_infer_params()
-        stan["gotowy"] = True
         log(f"model={MODEL} wczytany ms={int((time.time() - t0) * 1000)}")
+        rozgrzej()
+        stan["gotowy"] = True
     except Exception as e:  # noqa: BLE001 — chcemy zobaczyć każdy błąd w /zdrowie
         stan["blad"] = type(e).__name__
         log(f"BLAD wczytania modelu: {type(e).__name__}: {e}")
+
+
+def rozgrzej():
+    """Jeden krótki film „na sucho”, żeby kompilacja nie spadła na pierwsze zdanie Tymona."""
+    from PIL import Image
+    t0 = time.time()
+    try:
+        bufor = io.BytesIO()
+        Image.new("RGB", (512, 512), (128, 128, 128)).save(bufor, format="PNG")
+        with blokada:
+            ustaw_portret(bufor.getvalue())
+            generuj_klatki(np.zeros(2 * P["sample_rate"], dtype=np.float32))
+        log(f"rozgrzewka ms={int((time.time() - t0) * 1000)}")
+    except Exception as e:  # noqa: BLE001 — rozgrzewka nie może zablokować usługi
+        log(f"rozgrzewka nieudana ({type(e).__name__}) ms={int((time.time() - t0) * 1000)}")
+    finally:
+        stan["portret"] = None  # prawdziwy portret dośle Tymon (409 -> /portret)
+
+
+def pilnuj_bezczynnosci():
+    """Po BEZCZYNNOSC_S bez zdań: zatrzymaj tę maszynę (RunPod daje podowi własny klucz)."""
+    while True:
+        time.sleep(30)
+        if not stan["gotowy"] or not POD_ID:
+            continue
+        cisza = time.time() - ostatnia_aktywnosc
+        if cisza < BEZCZYNNOSC_S:
+            continue
+        log(f"bezczynnosc s={int(cisza)} — zatrzymuje maszyne")
+        for polecenie in (["runpodctl", "pod", "stop", POD_ID], ["runpodctl", "stop", "pod", POD_ID]):
+            try:
+                wynik = subprocess.run(polecenie, capture_output=True, timeout=60)
+                log(f"{' '.join(polecenie[:3])} kod={wynik.returncode}")
+                if wynik.returncode == 0:
+                    return
+            except Exception as e:  # noqa: BLE001
+                log(f"{' '.join(polecenie[:3])} wyjatek={type(e).__name__}")
+        time.sleep(300)  # nie udało się — spróbujemy za 5 min (strażnik w Vercelu i tak czuwa)
 
 
 def ustaw_portret(dane: bytes) -> str:
@@ -162,7 +212,7 @@ def zakoduj_mp4(klatki: np.ndarray) -> bytes:
 @app.get("/zdrowie")
 def zdrowie():
     return jsonify({"gotowy": stan["gotowy"], "model": MODEL, "portret": stan["portret"],
-                    "blad": stan["blad"], "wersja": "v2"})
+                    "blad": stan["blad"], "wersja": "v3"})
 
 
 @app.post("/portret")
@@ -172,6 +222,8 @@ def portret():
     dane = request.get_data()
     if not dane or len(dane) > MAKS_PORTRET_B:
         return jsonify({"blad": "portret"}), 400
+    global ostatnia_aktywnosc
+    ostatnia_aktywnosc = time.time()
     with blokada:
         t0 = time.time()
         try:
@@ -192,6 +244,8 @@ def mow():
     dane = request.get_data()
     if not dane or len(dane) > MAKS_DZWIEK_B:
         return jsonify({"blad": "dzwiek"}), 400
+    global ostatnia_aktywnosc
+    ostatnia_aktywnosc = time.time()
     with blokada:
         t0 = time.time()
         try:
@@ -248,5 +302,6 @@ def zglaszaj_adres():
 if __name__ == "__main__":
     threading.Thread(target=wczytaj_model, daemon=True).start()
     threading.Thread(target=zglaszaj_adres, daemon=True).start()
+    threading.Thread(target=pilnuj_bezczynnosci, daemon=True).start()
     log(f"usluga startuje port={PORT} model={MODEL} face_crop={int(FACE_CROP)}")
     app.run(host="0.0.0.0", port=PORT, threaded=True)

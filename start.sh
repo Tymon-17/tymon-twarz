@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # ============================================================
-# Tymon — silnik twarzy, prototyp v1 (27.10.2026, Sweterek)
+# Tymon — silnik twarzy (v1 27.10, v3 28.10.2026, Sweterek)
 # Instaluje SoulX-FlashHead (portret + dźwięk -> mówiąca twarz) na maszynie RunPod
-# i uruchamia stronę demo za hasłem. Bez kluczy w kodzie. Bez publicznych linków.
+# i uruchamia usługę dla aplikacji Tymona. Bez kluczy w kodzie. Bez publicznych linków.
 #
-# Użycie (w terminalu poda):
+# v3: maszynę stawia APLIKACJA (API RunPod) i ten skrypt rusza sam przy starcie poda.
+# Wszystko, co ciężkie, leży na WOLUMENIE SIECIOWYM pod /workspace: Python, biblioteki,
+# modele, pamięć kompilacji. Pierwszy start instaluje (ok. 15 min), każdy następny tylko
+# sprawdza znaczniki i od razu uruchamia usługę.
+#
+# Ręcznie (w terminalu poda):
 #   curl -fsSL https://raw.githubusercontent.com/Tymon-17/tymon-twarz/main/start.sh | bash
 # Tryby po instalacji:
 #   bash /workspace/tymon-twarz/uruchom.sh usluga     # okienko dla aplikacji Tymona (domyślnie)
@@ -15,7 +20,11 @@
 set -euo pipefail
 LOG=/workspace/twarz-instalacja.log
 mkdir -p /workspace
-exec > >(tee -a "$LOG") 2>&1
+exec > >(tee "$LOG") 2>&1
+# Python zarządzany przez uv leży NA WOLUMENIE (inaczej środowisko z wolumenu nie miałoby
+# interpretera na nowej maszynie); pamięć podręczna pobrań — na dysku maszyny.
+export UV_PYTHON_INSTALL_DIR=/workspace/.uv-python UV_PYTHON_PREFERENCE=only-managed
+export UV_CACHE_DIR=/root/.cache/uv UV_LINK_MODE=copy
 krok() { echo; echo "==> $(date '+%H:%M:%S') $*"; }
 
 krok "Sprawdzam hasło strony demo (zmienna DEMO_HASLO w ustawieniach poda)"
@@ -42,8 +51,14 @@ if [ ! -d SoulX-FlashHead/.git ]; then git clone -q --depth 1 https://github.com
 cd SoulX-FlashHead
 echo "wersja FlashHead: $(git rev-parse --short HEAD)"
 
-krok "Środowisko Pythona 3.10 i biblioteki (kilka minut)"
-[ -d .venv ] || uv venv -q -p 3.10 .venv
+krok "Środowisko Pythona 3.10 i biblioteki"
+ZNACZNIK_SRODOWISKA=.venv/.tymon-gotowe-v3
+if [ -f "$ZNACZNIK_SRODOWISKA" ] && .venv/bin/python -c "import torch, flash_attn" 2>/dev/null; then
+  echo "już zainstalowane (wolumen) — pomijam"
+  # shellcheck disable=SC1091
+  set +u; source .venv/bin/activate; set -u
+else
+[ -x .venv/bin/python ] || uv venv -q -p 3.10 .venv
 # shellcheck disable=SC1091
 set +u; source .venv/bin/activate; set -u
 # Lista autorów ma sprzeczność: nvidia-nccl-cu12==2.27.3, a xformers 0.0.31 -> torch 2.7.1 wymaga nccl 2.26.2.
@@ -66,8 +81,13 @@ if ! python -c "import flash_attn" 2>/dev/null; then
   uv pip install -q "$WHL" || { echo "UWAGA: gotowa paczka nie weszła — buduję (długo)"; uv pip install flash_attn==2.8.0.post2 --no-build-isolation; }
 fi
 python -c "import torch, flash_attn; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'gpu', torch.cuda.is_available(), 'flash_attn', flash_attn.__version__)"
+touch "$ZNACZNIK_SRODOWISKA"
+fi
 
 krok "Modele (ok. kilku GB, raz)"
+if [ -f models/.tymon-gotowe ]; then
+  echo "już są (wolumen) — pomijam"
+else
 # Szablon RunPod włącza szybkie pobieranie (HF_HUB_ENABLE_HF_TRANSFER=1); bez paczki hf_transfer wyłączamy je.
 python -c "import hf_transfer" 2>/dev/null || export HF_HUB_ENABLE_HF_TRANSFER=0
 python - <<'PY'
@@ -78,6 +98,8 @@ for repo, cel in [("Soul-AILab/SoulX-FlashHead-1_3B", "models/SoulX-FlashHead-1_
     snapshot_download(repo, local_dir=cel)
 print("modele gotowe")
 PY
+touch models/.tymon-gotowe
+fi
 
-krok "Instalacja skończona. Uruchamiam usługę twarzy dla Tymona"
+krok "Gotowe. Uruchamiam usługę twarzy dla Tymona"
 bash /workspace/tymon-twarz/uruchom.sh usluga

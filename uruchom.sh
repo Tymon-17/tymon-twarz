@@ -9,6 +9,11 @@ cd /workspace/SoulX-FlashHead
 # shellcheck disable=SC1091
 set +u; source .venv/bin/activate; set -u
 
+# Pamięć kompilacji (torch.compile) na wolumenie: pierwsza kompilacja trwała 147 s,
+# kolejne maszyny biorą gotowe kawałki stąd.
+mkdir -p /workspace/cache/inductor /workspace/cache/triton
+export TORCHINDUCTOR_CACHE_DIR=/workspace/cache/inductor TRITON_CACHE_DIR=/workspace/cache/triton
+
 pkill -f tymon_demo.py 2>/dev/null || true
 pkill -f tymon-twarz/usluga.py 2>/dev/null || true
 sleep 2

@@ -6,6 +6,8 @@
 set -euo pipefail
 TRYB="${1:-usluga}"
 cd /workspace/SoulX-FlashHead
+# v5: ffmpeg z wolumenu (start.sh kładzie go tam raz), potem systemowy.
+export PATH=/workspace/bin:$PATH
 # shellcheck disable=SC1091
 set +u; source .venv/bin/activate; set -u
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# Tymon — silnik twarzy (v1 27.10, v3 28.10.2026, Sweterek)
+# Tymon — silnik twarzy (v1 27.10, v3 28.10, v5 29.10.2026, Sweterek)
 # Instaluje SoulX-FlashHead (portret + dźwięk -> mówiąca twarz) na maszynie RunPod
 # i uruchamia usługę dla aplikacji Tymona. Bez kluczy w kodzie. Bez publicznych linków.
 #
@@ -34,17 +34,52 @@ if [ -z "${DEMO_HASLO:-}" ] || [ ${#DEMO_HASLO} -lt 10 ]; then
 fi
 
 krok "Karta graficzna"
-nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || { echo "Brak karty NVIDIA na tej maszynie."; exit 1; }
+if command -v nvidia-smi >/dev/null; then
+  nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || { echo "Brak karty NVIDIA na tej maszynie."; exit 1; }
+else
+  echo "UWAGA: obraz nie ma nvidia-smi — kartę sprawdzi dopiero PyTorch niżej"
+fi
+
+# v5 (29.10): działa też na MAŁYM obrazie (runpod/base, ok. 0,7 GB zamiast ok. 10 GB) — wszystko,
+# czego obraz nie ma, doinstalowuje sam. ffmpeg leży na WOLUMENIE (/workspace/bin, raz), więc
+# kolejne starty nie czekają na apt. Narzędzia PRZED pobraniem skryptów (git może nie być w obrazie).
+krok "Narzędzia systemowe (ffmpeg, git, gcc, uv)"
+export DEBIAN_FRONTEND=noninteractive
+export PATH=/workspace/bin:$PATH
+mkdir -p /workspace/bin
+if ! ffmpeg -version >/dev/null 2>&1 && command -v xz >/dev/null; then
+  echo "ffmpeg na wolumen (raz)…"
+  ( set -e; T=$(mktemp -d); curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" | tar -xJ -C "$T"
+    cp "$T"/ffmpeg-*/bin/ffmpeg "$T"/ffmpeg-*/bin/ffprobe /workspace/bin/; rm -rf "$T" ) || echo "UWAGA: ffmpeg z sieci nie wszedł — spróbuję apt"
+fi
+BRAKI=()
+ffmpeg -version >/dev/null 2>&1 || BRAKI+=(ffmpeg)
+command -v git >/dev/null || BRAKI+=(git)
+command -v gcc >/dev/null || BRAKI+=(gcc)          # torch.compile (Triton) buduje małe moduły w C
+LDC=$(command -v ldconfig || echo /sbin/ldconfig)
+"$LDC" -p 2>/dev/null | grep -q 'libGL.so.1' || BRAKI+=(libgl1)   # opencv
+"$LDC" -p 2>/dev/null | grep -q 'libglib-2.0.so.0' || BRAKI+=(GLIB)
+if [ ${#BRAKI[@]} -gt 0 ]; then
+  echo "doinstalowuję z apt: ${BRAKI[*]}"
+  apt-get update -qq || true
+  for P in "${BRAKI[@]}"; do
+    if [ "$P" = GLIB ]; then apt-get install -y -qq libglib2.0-0t64 >/dev/null 2>&1 || apt-get install -y -qq libglib2.0-0 >/dev/null 2>&1 || echo "UWAGA: brak glib"
+    else apt-get install -y -qq "$P" >/dev/null 2>&1 || echo "UWAGA: apt nie zainstalował $P"; fi
+  done
+else
+  echo "wszystko jest — bez apt"
+fi
+ffmpeg -version >/dev/null 2>&1 || { echo "Brak ffmpeg."; exit 1; }
+command -v git >/dev/null || { echo "Brak git."; exit 1; }
+if ! command -v uv >/dev/null; then
+  pip install -q uv 2>/dev/null || python3 -m pip install -q uv 2>/dev/null \
+    || { curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null; export PATH=$HOME/.local/bin:$PATH; }
+fi
+command -v uv >/dev/null || { echo "Brak uv."; exit 1; }
 
 krok "Pobieram skrypty Tymona (tymon-twarz)"
 cd /workspace
 if [ -d tymon-twarz/.git ]; then git -C tymon-twarz pull -q; else git clone -q --depth 1 https://github.com/Tymon-17/tymon-twarz.git; fi
-
-krok "Narzędzia systemowe (ffmpeg, git)"
-export DEBIAN_FRONTEND=noninteractive
-(apt-get update -qq && apt-get install -y -qq ffmpeg git >/dev/null) || echo "UWAGA: apt nie zadziałał — sprawdzam, czy ffmpeg już jest"
-command -v ffmpeg >/dev/null || { echo "Brak ffmpeg."; exit 1; }
-pip install -q uv
 
 krok "Pobieram SoulX-FlashHead"
 if [ ! -d SoulX-FlashHead/.git ]; then git clone -q --depth 1 https://github.com/Soul-AILab/SoulX-FlashHead.git; fi

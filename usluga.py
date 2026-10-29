@@ -25,6 +25,19 @@ v3 (28.10, list Tymona):
     Pamięć kompilacji leży na wolumenie (uruchom.sh), więc kolejne maszyny rozgrzewają się szybciej.
   • SAMOWYŁĄCZENIE: druga linia obrony obok strażnika w Vercelu — po TWARZ_BEZCZYNNOSC_MIN
     minutach bez zdania maszyna zatrzymuje się sama (runpodctl, klucz poda od RunPod).
+
+v4 (29.10, zamówienie Tymona — POMIAR KOMPILACJI przed decyzją o serverless):
+  • POST /pomiar — ta sama karta, ten sam proces, te same nagrania w obu trybach:
+    najpierw model skompilowany (torch.compile), potem ten sam model BEZ kompilacji
+    (oryginał spod kompilacji), na końcu kompilacja wraca. Nagrania testowe to wycinki
+    przykładowego pliku autorów FlashHead (examples/podcast_sichuan_16k.wav) i ich
+    portret (examples/girl.png) — żadnych rozmów ani zdjęcia Tymona. Czas renderu zależy
+    od długości dźwięku, nie od słów, więc wycinki mają długości typowych zdań.
+    Uruchamia go skrypt pomiar.py w terminalu poda. Po pomiarze portret się zeruje
+    (aplikacja dośle właściwy, jak po rozgrzewce).
+  • TWARZ_KOMPILACJA=0 (zmienna poda) — usługa startuje w ogóle bez torch.compile
+    (krótszy start; do przyszłego obrazu serverless, jeśli pomiar to uzasadni). Domyślnie 1.
+  • W logu /mow dochodzi wsp= (render_ms / dzwiek_ms; poniżej 1,0 = szybciej niż mowa).
 Logi: tylko liczby i kody, bez treści.
 """
 import hashlib
@@ -63,6 +76,11 @@ MAKS_DZWIEK_B = 3 * 1024 * 1024     # jedno zdanie z ElevenLabs to zwykle < 300 
 MAKS_PORTRET_B = 8 * 1024 * 1024
 MAKS_DZWIEK_S = 60.0
 BEZCZYNNOSC_S = int(os.environ.get("TWARZ_BEZCZYNNOSC_MIN", "20")) * 60
+KOMPILACJA = os.environ.get("TWARZ_KOMPILACJA", "1").strip() != "0"
+# Pomiar (v4): długości typowych zdań Tymona i miejsca wycięcia z pliku przykładowego autorów.
+POMIAR_PLIK = "examples/podcast_sichuan_16k.wav"
+POMIAR_PORTRET = "examples/girl.png"
+POMIAR_ZDANIA = [(1.5, 2.0), (3.0, 10.0), (5.0, 20.0), (8.0, 35.0)]  # (sekundy, początek w s)
 ostatnia_aktywnosc = time.time()
 
 app = Flask(__name__)
@@ -95,11 +113,16 @@ def wczytaj_model():
     global pipeline, P
     try:
         from flash_head.inference import get_infer_params, get_pipeline
+        if not KOMPILACJA:
+            # Stałe modułu czytane w konstruktorze potoku — wyłączamy je przed jego zbudowaniem.
+            import flash_head.src.pipeline.flash_head_pipeline as fhp
+            fhp.COMPILE_MODEL = False
+            fhp.COMPILE_VAE = False
         t0 = time.time()
         pipeline = get_pipeline(world_size=1, ckpt_dir="models/SoulX-FlashHead-1_3B",
                                 model_type=MODEL, wav2vec_dir="models/wav2vec2-base-960h")
         P = get_infer_params()
-        log(f"model={MODEL} wczytany ms={int((time.time() - t0) * 1000)}")
+        log(f"model={MODEL} kompilacja={int(KOMPILACJA)} wczytany ms={int((time.time() - t0) * 1000)}")
         rozgrzej()
         stan["gotowy"] = True
     except Exception as e:  # noqa: BLE001 — chcemy zobaczyć każdy błąd w /zdrowie
@@ -212,7 +235,7 @@ def zakoduj_mp4(klatki: np.ndarray) -> bytes:
 @app.get("/zdrowie")
 def zdrowie():
     return jsonify({"gotowy": stan["gotowy"], "model": MODEL, "portret": stan["portret"],
-                    "blad": stan["blad"], "wersja": "v3"})
+                    "blad": stan["blad"], "kompilacja": KOMPILACJA, "wersja": "v4"})
 
 
 @app.post("/portret")
@@ -266,13 +289,118 @@ def mow():
         t3 = time.time()
     ms = lambda a, b: int((b - a) * 1000)  # noqa: E731
     log(f"mow dzwiek_ms={int(sekundy * 1000)} klatki={len(klatki)} dekod_ms={ms(t0, t1)} "
-        f"render_ms={ms(t1, t2)} mp4_ms={ms(t2, t3)} mp4_kb={len(mp4) // 1024}")
+        f"render_ms={ms(t1, t2)} mp4_ms={ms(t2, t3)} mp4_kb={len(mp4) // 1024} "
+        f"wsp={(t2 - t1) / sekundy:.2f}")
     odp = Response(mp4, mimetype="video/mp4")
     odp.headers["x-render-ms"] = str(ms(t1, t2))
     odp.headers["x-calosc-ms"] = str(ms(t0, t3))
     odp.headers["x-dzwiek-ms"] = str(int(sekundy * 1000))
     odp.headers["Cache-Control"] = "no-store"
     return odp
+
+
+# ── POMIAR KOMPILACJI (v4) ────────────────────────────────────
+
+def _cele_vae():
+    """Obiekty, na których FlashHead podmienia encode/decode na wersje skompilowane."""
+    vae = pipeline.vae
+    return [vae.model] if getattr(pipeline, "use_ltx", False) else [vae]
+
+
+def wylacz_kompilacje():
+    """Ten sam załadowany model, ale bez torch.compile. Zwraca, co trzeba przywrócić."""
+    schowek = {"model": None, "vae": []}
+    oryginal = getattr(pipeline.model, "_orig_mod", None)   # torch.compile trzyma oryginał tutaj
+    if oryginal is not None:
+        schowek["model"] = pipeline.model
+        pipeline.model = oryginal
+    for obj in _cele_vae():
+        for nazwa in ("encode", "decode"):
+            if nazwa in obj.__dict__:   # wersja skompilowana leży w obiekcie, oryginał w klasie
+                schowek["vae"].append((obj, nazwa, obj.__dict__.pop(nazwa)))
+    return schowek
+
+
+def przywroc_kompilacje(schowek):
+    if schowek["model"] is not None:
+        pipeline.model = schowek["model"]
+    for obj, nazwa, fn in schowek["vae"]:
+        obj.__dict__[nazwa] = fn
+
+
+def zmierz_tryb(tryb, nagranie, portret_png):
+    """Rozgrzewka (nie liczona) + zdania testowe. Zwraca listę wierszy z liczbami."""
+    import torch
+    sr = P["sample_rate"]
+    ustaw_portret(portret_png)            # ten sam stan startowy w obu trybach (ziarno stałe)
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    t0 = time.time()
+    generuj_klatki(nagranie[: 2 * sr].copy())
+    rozgrzewka_ms = int((time.time() - t0) * 1000)
+    log(f"pomiar tryb={tryb} rozgrzewka_ms={rozgrzewka_ms}")
+    wiersze = []
+    for sekundy, od in POMIAR_ZDANIA:
+        kawalek = nagranie[int(od * sr): int((od + sekundy) * sr)].copy()
+        t1 = time.time()
+        klatki = generuj_klatki(kawalek)
+        t2 = time.time()
+        mp4 = zakoduj_mp4(klatki)
+        t3 = time.time()
+        dzwiek_ms = int(len(kawalek) * 1000 / sr)
+        render_ms = int((t2 - t1) * 1000)
+        mp4_ms = int((t3 - t2) * 1000)
+        w = {"tryb": tryb, "dzwiek_ms": dzwiek_ms, "klatki": int(len(klatki)), "render_ms": render_ms,
+             "mp4_ms": mp4_ms, "wsp": round(render_ms / dzwiek_ms, 2),
+             "wsp_z_mp4": round((render_ms + mp4_ms) / dzwiek_ms, 2), "mp4_kb": len(mp4) // 1024}
+        log(f"pomiar tryb={tryb} dzwiek_ms={dzwiek_ms} klatki={w['klatki']} render_ms={render_ms} "
+            f"mp4_ms={mp4_ms} wsp={w['wsp']:.2f} wsp_z_mp4={w['wsp_z_mp4']:.2f}")
+        wiersze.append(w)
+    pamiec_mb = int(torch.cuda.max_memory_allocated() / 1024 / 1024)
+    log(f"pomiar tryb={tryb} pamiec_karty_mb={pamiec_mb}")
+    return {"tryb": tryb, "rozgrzewka_ms": rozgrzewka_ms, "pamiec_karty_mb": pamiec_mb, "zdania": wiersze}
+
+
+@app.post("/pomiar")
+def pomiar():
+    """Porównanie: z kompilacją i bez niej, na tych samych nagraniach. Trwa kilka minut."""
+    global ostatnia_aktywnosc
+    if not stan["gotowy"]:
+        return jsonify({"blad": "laduje"}), 503
+    if not (os.path.isfile(POMIAR_PLIK) and os.path.isfile(POMIAR_PORTRET)):
+        return jsonify({"blad": "brak_plikow_przykladowych"}), 500
+    with open(POMIAR_PLIK, "rb") as f:
+        nagranie = dekoduj_dzwiek(f.read())
+    with open(POMIAR_PORTRET, "rb") as f:
+        portret_png = f.read()
+    import torch
+    wynik = {"model": MODEL, "karta": torch.cuda.get_device_name(0), "tryby": []}
+    with blokada:
+        t0 = time.time()
+        schowek = None
+        try:
+            if KOMPILACJA:
+                wynik["tryby"].append(zmierz_tryb("z_kompilacja", nagranie, portret_png))
+                schowek = wylacz_kompilacje()
+                if schowek["model"] is None and not schowek["vae"]:
+                    log("pomiar: nie znalazlam wersji skompilowanej — drugi tryb pominiety")
+                    wynik["uwaga"] = "brak_wersji_skompilowanej"
+                else:
+                    wynik["tryby"].append(zmierz_tryb("bez_kompilacji", nagranie, portret_png))
+            else:
+                wynik["tryby"].append(zmierz_tryb("bez_kompilacji", nagranie, portret_png))
+                wynik["uwaga"] = "usluga_wystartowala_bez_kompilacji"
+        except Exception as e:  # noqa: BLE001
+            log(f"BLAD pomiaru: {type(e).__name__}: {e}")
+            wynik["blad"] = type(e).__name__
+        finally:
+            if schowek is not None:
+                przywroc_kompilacje(schowek)
+            stan["portret"] = None          # prawdziwy portret dośle aplikacja (409 -> /portret)
+            ostatnia_aktywnosc = time.time()
+        wynik["calosc_ms"] = int((time.time() - t0) * 1000)
+    log(f"pomiar koniec calosc_ms={wynik['calosc_ms']}")
+    return jsonify(wynik), (500 if "blad" in wynik else 200)
 
 
 def zglaszaj_adres():

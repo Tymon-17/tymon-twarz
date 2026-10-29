@@ -1,4 +1,4 @@
-# tymon-twarz — silnik twarzy Tymona (v3)
+# tymon-twarz — silnik twarzy Tymona (v4)
 
 Osobny moduł: **portret + dźwięk → mówiąca twarz**. Nie zna Tymona, jego pamięci ani rozmów.
 Dostaje tylko zdjęcie i nagranie głosu. Model językowy i silnik twarzy można wymieniać niezależnie.
@@ -10,6 +10,7 @@ Dostaje tylko zdjęcie i nagranie głosu. Model językowy i silnik twarzy można
   - Python, biblioteki, modele i pamięć kompilacji leżą na **wolumenie sieciowym**, więc każdy następny start trwa minuty;
   - po starcie maszyna sama się rozgrzewa;
   - po 20 min bez zdań sama się zatrzymuje.
+- **v4 (29.10, zamówienie Tymona):** pomiar z kompilacją i bez niej (`pomiar.py`), przed decyzją o serverless.
 
 W repozytorium jest sam kod. Nie ma tu kluczy, zdjęcia Tymona ani nagrań.
 
@@ -45,6 +46,13 @@ grep TWARZ /workspace/twarz-usluga.log | tail -n 20
 ```
 Wynik wklej Sweterkowi. Dzienniki zawierają tylko liczby i kody.
 
+### Pomiar kompilacji (v4, 29.10)
+Gdy twarz w aplikacji świeci „● żywa”, w terminalu poda:
+```
+python /workspace/tymon-twarz/pomiar.py
+```
+Te same nagrania testowe (przykład autorów FlashHead, nie rozmowy Tymona) najpierw z `torch.compile`, potem bez niego. Trwa 2–6 min, wynik: tabelka + `/workspace/pomiar-kompilacji-*.txt`. Zmienna poda `TWARZ_KOMPILACJA=0` uruchamia całą usługę bez kompilacji (domyślnie 1).
+
 ### Strona demo zamiast usługi
 W terminalu poda:
 - `bash /workspace/tymon-twarz/uruchom.sh plik` — strona demo (port 7860, login `tymon`);
@@ -73,5 +81,6 @@ W terminalu poda:
 ## Pliki
 - `start.sh` — instalacja (pomija to, co już jest na wolumenie) i start usługi
 - `uruchom.sh` — tryb `usluga` (domyślnie), `plik` albo `strumien`
-- `usluga.py` — usługa dla aplikacji Tymona
+- `usluga.py` — usługa dla aplikacji Tymona (v4: `/pomiar`)
+- `pomiar.py` — pomiar z kompilacją i bez niej (uruchamiany ręcznie)
 - `zabezpiecz.py` — zabezpieczenie strony demo: hasło, brak publicznych linków, port 7860

@@ -38,10 +38,18 @@ v4 (29.10, zamówienie Tymona — POMIAR KOMPILACJI przed decyzją o serverless)
   • TWARZ_KOMPILACJA=0 (zmienna poda) — usługa startuje w ogóle bez torch.compile
     (krótszy start; do przyszłego obrazu serverless, jeśli pomiar to uzasadni). Domyślnie 1.
   • W logu /mow dochodzi wsp= (render_ms / dzwiek_ms; poniżej 1,0 = szybciej niż mowa).
+
+v6 (29.10, wynik pomiaru): ffmpeg sam pakuje 3 s filmu w 0,12 s, a w usłudze dekodowanie dźwięku
+  trwało ~1,5 s i zapis mp4 ~1,9 s na KAŻDE zdanie — prawie cały koszt to uruchamianie ffmpeg
+  z wnętrza dużego procesu z modelem na karcie. Teraz ffmpeg uruchamia MAŁY POMOCNIK: osobny proces
+  odgałęziony na samym starcie, zanim wczyta się PyTorch i model. Klatki idą do niego przez plik
+  w pamięci (/dev/shm, gdy jest miejsce), nie przez rurę. Gdy pomocnik zawiedzie — stara droga.
+  Wynik (wideo, dźwięk) bajt w bajt ten sam: te same polecenia ffmpeg.
 Logi: tylko liczby i kody, bez treści.
 """
 import hashlib
 import io
+import multiprocessing
 import hmac
 import json
 import os
@@ -184,13 +192,73 @@ def ustaw_portret(dane: bytes) -> str:
     return sha
 
 
+# ── POMOCNIK FFMPEG (v6) ──────────────────────────────────────
+# Funkcje wykonywane W POMOCNIKU (muszą być na poziomie modułu, żeby dało się je przekazać).
+
+def _pomocnik_uruchom(polecenie, wejscie, limit_s):
+    """ffmpeg z wejściem w bajtach (dźwięk) — zwraca stdout."""
+    return subprocess.run(polecenie, input=wejscie, capture_output=True, check=True, timeout=limit_s).stdout
+
+
+def _pomocnik_mp4(polecenie_bez_wyjscia, sciezka_klatek, limit_s):
+    """ffmpeg czyta klatki z pliku, pisze mp4 do katalogu tymczasowego — zwraca bajty mp4."""
+    with tempfile.TemporaryDirectory() as kat:
+        cel = os.path.join(kat, "twarz.mp4")
+        polecenie = [a if a != "@WEJSCIE@" else sciezka_klatek for a in polecenie_bez_wyjscia] + [cel]
+        subprocess.run(polecenie, capture_output=True, check=True, timeout=limit_s)
+        with open(cel, "rb") as f:
+            return f.read()
+
+
+pomocnik = None   # multiprocessing.Pool(1), zakładany w __main__ PRZED wczytaniem modelu
+pomocnik_zawiodl = False
+
+
+def zaloz_pomocnika():
+    global pomocnik
+    try:
+        pomocnik = multiprocessing.get_context("fork").Pool(1)
+        pomocnik.apply(_pomocnik_uruchom, (["ffmpeg", "-hide_banner", "-version"], b"", 20))  # rozruch
+        log("pomocnik ffmpeg gotowy")
+    except Exception as e:  # noqa: BLE001
+        pomocnik = None
+        log(f"pomocnik ffmpeg niedostepny ({type(e).__name__}) — stara droga")
+
+
+def przez_pomocnika(funkcja, *argumenty):
+    """Wywołanie w pomocniku; przy jego awarii None (wołający idzie starą drogą)."""
+    global pomocnik_zawiodl
+    if pomocnik is None or pomocnik_zawiodl:
+        return None
+    try:
+        return pomocnik.apply_async(funkcja, argumenty).get(timeout=90)
+    except subprocess.CalledProcessError:
+        raise  # błąd samego ffmpeg (np. zły plik) — taki sam jak w starej drodze
+    except Exception as e:  # noqa: BLE001
+        pomocnik_zawiodl = True
+        log(f"pomocnik ffmpeg zawiodl ({type(e).__name__}) — dalej stara droga")
+        return None
+
+
+def katalog_klatek(bajtow: int) -> str:
+    """/dev/shm (pamięć), gdy jest tam dość miejsca; inaczej zwykły katalog tymczasowy."""
+    import shutil
+    try:
+        if shutil.disk_usage("/dev/shm").free > bajtow * 2 + 64 * 1024 * 1024:
+            return "/dev/shm"
+    except OSError:
+        pass
+    return tempfile.gettempdir()
+
+
 def dekoduj_dzwiek(dane: bytes) -> np.ndarray:
     """MP3/WAV -> mono float32 16 kHz (ffmpeg)."""
-    wynik = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
-         "-f", "f32le", "-ac", "1", "-ar", str(P["sample_rate"]), "pipe:1"],
-        input=dane, capture_output=True, check=True, timeout=30)
-    return np.frombuffer(wynik.stdout, dtype=np.float32).copy()
+    polecenie = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
+                 "-f", "f32le", "-ac", "1", "-ar", str(P["sample_rate"]), "pipe:1"]
+    wyjscie = przez_pomocnika(_pomocnik_uruchom, polecenie, dane, 30)
+    if wyjscie is None:
+        wyjscie = subprocess.run(polecenie, input=dane, capture_output=True, check=True, timeout=30).stdout
+    return np.frombuffer(wyjscie, dtype=np.float32).copy()
 
 
 def generuj_klatki(dzwiek: np.ndarray) -> np.ndarray:
@@ -220,6 +288,26 @@ def generuj_klatki(dzwiek: np.ndarray) -> np.ndarray:
 
 def zakoduj_mp4(klatki: np.ndarray) -> bytes:
     t, h, w, _ = klatki.shape
+    # v6: klatki do pliku w pamięci, ffmpeg uruchamia pomocnik (te same parametry kodowania).
+    if pomocnik is not None and not pomocnik_zawiodl:
+        surowe = klatki.tobytes()
+        sciezka = os.path.join(katalog_klatek(len(surowe)), f"twarz-klatki-{os.getpid()}-{time.time_ns()}.rgb")
+        try:
+            with open(sciezka, "wb") as f:
+                f.write(surowe)
+            polecenie = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(P["tgt_fps"]),
+                         "-i", "@WEJSCIE@",
+                         "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+                         "-movflags", "+faststart"]
+            mp4 = przez_pomocnika(_pomocnik_mp4, polecenie, sciezka, 60)
+            if mp4 is not None:
+                return mp4
+        finally:
+            try:
+                os.remove(sciezka)
+            except OSError:
+                pass
     with tempfile.TemporaryDirectory() as kat:
         cel = os.path.join(kat, "twarz.mp4")
         subprocess.run(
@@ -235,7 +323,8 @@ def zakoduj_mp4(klatki: np.ndarray) -> bytes:
 @app.get("/zdrowie")
 def zdrowie():
     return jsonify({"gotowy": stan["gotowy"], "model": MODEL, "portret": stan["portret"],
-                    "blad": stan["blad"], "kompilacja": KOMPILACJA, "wersja": "v4"})
+                    "blad": stan["blad"], "kompilacja": KOMPILACJA, "pomocnik": pomocnik is not None and not pomocnik_zawiodl,
+                    "wersja": "v6"})
 
 
 @app.post("/portret")
@@ -428,6 +517,8 @@ def zglaszaj_adres():
 
 
 if __name__ == "__main__":
+    # v6: pomocnik ffmpeg PRZED wczytaniem modelu — odgałęzia się od małego procesu.
+    zaloz_pomocnika()
     threading.Thread(target=wczytaj_model, daemon=True).start()
     threading.Thread(target=zglaszaj_adres, daemon=True).start()
     threading.Thread(target=pilnuj_bezczynnosci, daemon=True).start()

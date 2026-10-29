@@ -1,4 +1,4 @@
-# tymon-twarz — silnik twarzy Tymona (v5)
+# tymon-twarz — silnik twarzy Tymona (v6)
 
 Osobny moduł: **portret + dźwięk → mówiąca twarz**. Nie zna Tymona, jego pamięci ani rozmów.
 Dostaje tylko zdjęcie i nagranie głosu. Model językowy i silnik twarzy można wymieniać niezależnie.
@@ -12,6 +12,7 @@ Dostaje tylko zdjęcie i nagranie głosu. Model językowy i silnik twarzy można
   - po 20 min bez zdań sama się zatrzymuje.
 - **v4 (29.10, zamówienie Tymona):** pomiar z kompilacją i bez niej (`pomiar.py`), przed decyzją o serverless.
 - **v5 (29.10, decyzja Astry):** działa też na **małym obrazie startowym** (`runpod/base`, ok. 0,7 GB zamiast ok. 10 GB) — szybsze pobieranie przy starcie maszyny. Brakujące narzędzia doinstalowuje sam; ffmpeg leży na wolumenie (`/workspace/bin`). Obraz wybiera zmienna Vercela `TWARZ_OBRAZ`. Twarz bez zmian.
+- **v6 (29.10, wynik pomiaru):** ffmpeg (dekodowanie głosu i zapis mp4) uruchamia mały pomocnik odgałęziony przed wczytaniem modelu — w dużym procesie każde uruchomienie kosztowało ok. 1,5–1,9 s na zdanie. Wynik bajt w bajt ten sam. `/zdrowie` pokazuje `pomocnik`.
 
 W repozytorium jest sam kod. Nie ma tu kluczy, zdjęcia Tymona ani nagrań.
 
